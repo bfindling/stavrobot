@@ -31,6 +31,7 @@ export interface SignalConfig {
 export interface TelegramConfig {
   botToken: string;
   allowedChatIds?: number[];
+  webhookHostname?: string;
 }
 
 export interface WhatsappConfig {}
@@ -127,6 +128,21 @@ export function parseConfig(content: string): Config {
   }
   if (config.publicHostname.endsWith("/")) {
     throw new Error("Config publicHostname must not end with a trailing slash.");
+  }
+
+  if (config.telegram?.webhookHostname !== undefined) {
+    if (config.telegram.webhookHostname.trim() === "") {
+      throw new Error("Config [telegram].webhookHostname must not be empty.");
+    }
+    if (
+      !config.telegram.webhookHostname.startsWith("http://") &&
+      !config.telegram.webhookHostname.startsWith("https://")
+    ) {
+      throw new Error("Config [telegram].webhookHostname must start with http:// or https://.");
+    }
+    if (config.telegram.webhookHostname.endsWith("/")) {
+      throw new Error("Config [telegram].webhookHostname must not end with a trailing slash.");
+    }
   }
 
   if (config.owner === undefined) {

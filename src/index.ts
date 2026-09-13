@@ -264,7 +264,17 @@ export async function handleTelegramWebhookRequest(
     return;
   }
 
-  if (webhookSecret !== undefined) {
+  if (webhookSecret === undefined) {
+    // Telegram is configured but webhook registration never succeeded (e.g. it failed at
+    // startup). There is no secret to check requests against, so refuse everything rather
+    // than silently accepting unauthenticated requests.
+    log.info("[stavrobot] Telegram webhook rejected: webhook not registered");
+    response.writeHead(503, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: "Telegram webhook not registered" }));
+    return;
+  }
+
+  {
     const providedSecret = request.headers["x-telegram-bot-api-secret-token"];
     if (providedSecret !== webhookSecret) {
       let reason = "unknown";
@@ -506,8 +516,15 @@ async function main(): Promise<void> {
     if (config.publicHostname === undefined) {
       throw new Error("Config must specify publicHostname when telegram is configured.");
     }
-    telegramWebhookSecret = await registerTelegramWebhook(config.telegram, config.publicHostname);
-    log.debug(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${telegramWebhookSecret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
+    try {
+      telegramWebhookSecret = await registerTelegramWebhook(
+        config.telegram,
+        config.telegram.webhookHostname ?? config.publicHostname,
+      );
+      log.debug(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${telegramWebhookSecret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
+    } catch (error) {
+      log.error("[stavrobot] Failed to register Telegram webhook; Telegram will be unavailable until this is fixed and the app is restarted:", error);
+    }
   }
 
   if (config.whatsapp !== undefined) {
