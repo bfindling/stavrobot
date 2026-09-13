@@ -484,6 +484,51 @@ export async function saveMessage(
   return result.rows[0].id;
 }
 
+export interface FallbackSendEntry {
+  source: string;
+  sender: string | undefined;
+  agentId: number;
+  toolName: string;
+  message: string;
+}
+
+export async function recordFallbackSend(pool: pg.Pool, entry: FallbackSendEntry): Promise<void> {
+  await pool.query(
+    "INSERT INTO fallback_sends (source, sender, agent_id, tool_name, message) VALUES ($1, $2, $3, $4, $5)",
+    [entry.source, entry.sender ?? null, entry.agentId, entry.toolName, entry.message],
+  );
+}
+
+export interface FallbackSendSummary {
+  source: string;
+  toolName: string;
+  count: number;
+}
+
+// Groups by (source, tool_name) rather than returning raw rows — a weekly report
+// only needs counts, and this keeps it cheap even if fallbacks were frequent.
+export async function getFallbackSendSummarySince(pool: pg.Pool, since: Date): Promise<FallbackSendSummary[]> {
+  const result = await pool.query<{ source: string; tool_name: string; count: string }>(
+    `SELECT source, tool_name, COUNT(*) as count
+     FROM fallback_sends
+     WHERE created_at >= $1
+     GROUP BY source, tool_name
+     ORDER BY count DESC`,
+    [since],
+  );
+  return result.rows.map((row) => ({ source: row.source, toolName: row.tool_name, count: Number(row.count) }));
+}
+
+// Null means no report has ever been sent.
+export async function getLastFallbackReportSentAt(pool: pg.Pool): Promise<Date | null> {
+  const result = await pool.query<{ sent_at: Date }>("SELECT sent_at FROM fallback_reports ORDER BY sent_at DESC LIMIT 1");
+  return result.rows[0]?.sent_at ?? null;
+}
+
+export async function recordFallbackReportSent(pool: pg.Pool): Promise<void> {
+  await pool.query("INSERT INTO fallback_reports (sent_at) VALUES (NOW())");
+}
+
 interface SeededCronEntry {
   marker: string;
   cronExpression: string;

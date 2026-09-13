@@ -216,6 +216,31 @@ const migrations: Migration[] = [
       )
     `);
 
+    // Records each time the queue had to deliver a channel reply itself because
+    // the agent produced a reply without calling the required send tool. See
+    // queue.ts's fallback-send logic. Durable (unlike container logs) so the
+    // weekly report in fallback-report.ts can query it after a restart.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fallback_sends (
+        id SERIAL PRIMARY KEY,
+        source TEXT NOT NULL,
+        sender TEXT,
+        agent_id INTEGER REFERENCES agents(id),
+        tool_name TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // One row per weekly fallback-report actually sent. Used only to decide
+    // whether a report is due (see fallback-report.ts) — not a log of content.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fallback_reports (
+        id SERIAL PRIMARY KEY,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
     // Create the schema_version table and set version to 0 if it doesn't exist.
     // The CHECK (id = 1) constraint enforces that only one row can ever exist.
     await client.query(`

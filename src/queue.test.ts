@@ -36,6 +36,7 @@ vi.mock("./database.js", () => ({
   isOwnerIdentity: vi.fn().mockReturnValue(false),
   resolveInterlocutor: vi.fn(),
   loadAgent: vi.fn().mockResolvedValue(null),
+  recordFallbackSend: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./allowlist.js", () => ({
   isInAllowlist: vi.fn().mockReturnValue(false),

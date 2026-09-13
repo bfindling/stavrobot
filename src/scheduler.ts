@@ -5,6 +5,8 @@ import { CronExpressionParser } from "cron-parser";
 import { listCronEntries, deleteCronEntry } from "./database.js";
 import { enqueueMessage } from "./queue.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import type { Config } from "./config.js";
+import { maybeSendWeeklyFallbackReport } from "./fallback-report.js";
 import { log } from "./log.js";
 
 interface ScheduledEntry {
@@ -16,6 +18,7 @@ interface ScheduledEntry {
 
 let scheduledEntries: ScheduledEntry[] = [];
 let schedulerPool: pg.Pool | undefined;
+let schedulerConfig: Config | undefined;
 
 function computeNextFireAt(cronExpression: string): Date {
   const interval = CronExpressionParser.parse(cronExpression);
@@ -101,10 +104,12 @@ function tick(): void {
   }
 
   void cleanupOldUploads();
+  void maybeSendWeeklyFallbackReport(schedulerPool!, schedulerConfig!);
 }
 
-export async function initializeScheduler(pool: pg.Pool): Promise<void> {
+export async function initializeScheduler(pool: pg.Pool, config: Config): Promise<void> {
   schedulerPool = pool;
+  schedulerConfig = config;
   await loadEntries(pool);
   setInterval(tick, 60_000);
   log.info(`[stavrobot] Scheduler initialized with ${scheduledEntries.length} entries.`);

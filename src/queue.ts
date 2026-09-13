@@ -9,7 +9,7 @@ import { sendSignalMessage } from "./signal.js";
 import { sendTelegramMessage } from "./telegram-api.js";
 import { sendWhatsappTextMessage } from "./whatsapp-api.js";
 import type { FileAttachment } from "./uploads.js";
-import { getMainAgentId, isOwnerIdentity, resolveInterlocutor, loadAgent } from "./database.js";
+import { getMainAgentId, isOwnerIdentity, resolveInterlocutor, loadAgent, recordFallbackSend } from "./database.js";
 import { log } from "./log.js";
 
 export const MAX_RETRIES = 3;
@@ -309,6 +309,17 @@ async function processQueue(): Promise<void> {
       if (expectedSendTool !== undefined && !sentViaChannelTool && response.trim() !== "") {
         log.warn(`[stavrobot] Turn produced a reply but never called ${expectedSendTool}; sending it directly as a fallback.`);
         await sendToSource(entry.source, entry.sender, queueConfig!, response);
+        try {
+          await recordFallbackSend(queuePool!, {
+            source: entry.source!,
+            sender: entry.sender,
+            agentId: routing.agentId,
+            toolName: expectedSendTool,
+            message: response,
+          });
+        } catch (recordError) {
+          log.error(`[stavrobot] Failed to record fallback send: ${recordError instanceof Error ? recordError.message : String(recordError)}`);
+        }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
