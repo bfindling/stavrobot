@@ -63,7 +63,8 @@ const mockSendWhatsappTextMessage = vi.mocked(sendWhatsappTextMessage);
 // Minimal stubs — the queue only passes these through to handlePrompt, which is mocked.
 const mockAbort = vi.fn();
 const mockSteer = vi.fn();
-const stubAgent = { abort: mockAbort, steer: mockSteer } as unknown as Agent;
+const mockSubscribe = vi.fn(() => vi.fn());
+const stubAgent = { abort: mockAbort, steer: mockSteer, subscribe: mockSubscribe } as unknown as Agent;
 const stubPool = {} as unknown as pg.Pool;
 const stubConfig = { publicHostname: "http://localhost" } as unknown as Config;
 

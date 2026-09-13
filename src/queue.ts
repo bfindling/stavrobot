@@ -232,7 +232,7 @@ export function parseProviderErrorMessage(errorMessage: string): string {
   return errorMessage;
 }
 
-async function sendErrorToSource(
+async function sendToSource(
   source: string | undefined,
   sender: string | undefined,
   config: Config,
@@ -242,22 +242,35 @@ async function sendErrorToSource(
     try {
       await sendSignalMessage(sender, message);
     } catch (sendError) {
-      log.error(`[stavrobot] Failed to send Signal error notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+      log.error(`[stavrobot] Failed to send Signal notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
     }
   } else if (source === "telegram" && sender !== undefined) {
     try {
       await sendTelegramMessage(config.telegram!.botToken, sender, message);
     } catch (sendError) {
-      log.error(`[stavrobot] Failed to send Telegram error notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+      log.error(`[stavrobot] Failed to send Telegram notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
     }
   } else if (source === "whatsapp" && sender !== undefined) {
     try {
       await sendWhatsappTextMessage(sender, message);
     } catch (sendError) {
-      log.error(`[stavrobot] Failed to send WhatsApp error notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+      log.error(`[stavrobot] Failed to send WhatsApp notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
     }
   }
 }
+
+// Maps a message source to the tool the agent is instructed (in the system
+// prompt) to call in order to actually deliver a reply on that channel: a
+// plain text response is otherwise saved to the DB but never sent anywhere.
+// The model sometimes forgets to call it (observed in production: several
+// turns produced a perfectly good reply that just never reached Telegram).
+// This is a safety net, not the primary delivery path — it fires only when
+// the turn produced a non-empty reply and skipped the expected tool.
+const CHANNEL_SEND_TOOL: Record<string, string> = {
+  telegram: "send_telegram_message",
+  signal: "send_signal_message",
+  whatsapp: "send_whatsapp_message",
+};
 
 async function processQueue(): Promise<void> {
   processing = true;
@@ -272,6 +285,18 @@ async function processQueue(): Promise<void> {
       log.error(`[stavrobot] Agent turn exceeded ${REQUEST_TIMEOUT_MS / 1000}s, aborting to unblock the queue.`);
       queueAgent!.abort();
     }, REQUEST_TIMEOUT_MS);
+    const expectedSendTool = entry.source !== undefined ? CHANNEL_SEND_TOOL[entry.source] : undefined;
+    let sentViaChannelTool = false;
+    const unsubscribeSendTracker = expectedSendTool !== undefined
+      ? queueAgent!.subscribe((event) => {
+          if (event.type === "message_end" && event.message.role === "toolResult") {
+            const toolResult = event.message as unknown as { toolName: string; isError: boolean };
+            if (toolResult.toolName === expectedSendTool && !toolResult.isError) {
+              sentViaChannelTool = true;
+            }
+          }
+        })
+      : undefined;
     try {
       const routing = await resolveTargetAgent(queuePool!, entry.source, entry.sender, entry.targetAgentId);
       if (routing === null) {
@@ -281,6 +306,10 @@ async function processQueue(): Promise<void> {
       }
       const response = await handlePrompt(queueAgent!, queuePool!, entry.message, queueConfig!, routing, entry.source, entry.attachments, entry.retries > 0);
       entry.resolve(response);
+      if (expectedSendTool !== undefined && !sentViaChannelTool && response.trim() !== "") {
+        log.warn(`[stavrobot] Turn produced a reply but never called ${expectedSendTool}; sending it directly as a fallback.`);
+        await sendToSource(entry.source, entry.sender, queueConfig!, response);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (error instanceof AbortError && !watchdogFired) {
@@ -297,13 +326,13 @@ async function processQueue(): Promise<void> {
         } else {
           log.error(`[stavrobot] Message timed out after ${MAX_RETRIES + 1} attempts, giving up.`);
           const userMessage = "Something went wrong: the request timed out repeatedly.";
-          await sendErrorToSource(entry.source, entry.sender, queueConfig!, userMessage);
+          await sendToSource(entry.source, entry.sender, queueConfig!, userMessage);
           entry.resolve(userMessage);
         }
       } else if (error instanceof AuthError) {
         log.error(`[stavrobot] Auth failure, not retrying: ${errorMessage}`);
         const loginMessage = `Authentication required. Visit ${queueConfig!.publicHostname}/login to log in.`;
-        await sendErrorToSource(entry.source, entry.sender, queueConfig!, loginMessage);
+        await sendToSource(entry.source, entry.sender, queueConfig!, loginMessage);
         entry.resolve(loginMessage);
       } else if (error instanceof TurnProgressPersistedError) {
         // The turn already persisted assistant/toolResult messages before
@@ -315,24 +344,24 @@ async function processQueue(): Promise<void> {
           log.error(`[stavrobot] Auth failure (401) after progress was persisted, not retrying: ${errorMessage}`);
           invalidateCredentials(queueConfig!);
           const loginMessage = `Authentication required. Visit ${queueConfig!.publicHostname}/login to log in.`;
-          await sendErrorToSource(entry.source, entry.sender, queueConfig!, loginMessage);
+          await sendToSource(entry.source, entry.sender, queueConfig!, loginMessage);
           entry.resolve(loginMessage);
         } else {
           log.error(`[stavrobot] Turn failed after progress was persisted, not retrying: ${errorMessage}`);
           const userMessage = `Something went wrong: ${parseProviderErrorMessage(errorMessage)}`;
-          await sendErrorToSource(entry.source, entry.sender, queueConfig!, userMessage);
+          await sendToSource(entry.source, entry.sender, queueConfig!, userMessage);
           entry.resolve(userMessage);
         }
       } else if (errorMessage.includes("401 ")) {
         log.error(`[stavrobot] Auth failure (401), not retrying: ${errorMessage}`);
         invalidateCredentials(queueConfig!);
         const loginMessage = `Authentication required. Visit ${queueConfig!.publicHostname}/login to log in.`;
-        await sendErrorToSource(entry.source, entry.sender, queueConfig!, loginMessage);
+        await sendToSource(entry.source, entry.sender, queueConfig!, loginMessage);
         entry.resolve(loginMessage);
       } else if (errorMessage.includes("400 {")) {
         log.error(`[stavrobot] Non-retryable API error (400 client error), not retrying: ${errorMessage}`);
         const userMessage = `Something went wrong: ${parseProviderErrorMessage(errorMessage)}`;
-        await sendErrorToSource(entry.source, entry.sender, queueConfig!, userMessage);
+        await sendToSource(entry.source, entry.sender, queueConfig!, userMessage);
         entry.resolve(userMessage);
       } else if (entry.retries < MAX_RETRIES) {
         const attempt = entry.retries + 1;
@@ -342,11 +371,12 @@ async function processQueue(): Promise<void> {
       } else {
         log.error(`[stavrobot] Message failed after ${MAX_RETRIES + 1} attempts, giving up: ${errorMessage}`);
         const userMessage = `Something went wrong: ${parseProviderErrorMessage(errorMessage)}`;
-        await sendErrorToSource(entry.source, entry.sender, queueConfig!, userMessage);
+        await sendToSource(entry.source, entry.sender, queueConfig!, userMessage);
         entry.resolve(userMessage);
       }
     } finally {
       clearTimeout(watchdog);
+      unsubscribeSendTracker?.();
       currentEntry = undefined;
     }
   }
