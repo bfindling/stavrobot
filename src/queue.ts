@@ -15,6 +15,14 @@ import { log } from "./log.js";
 export const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 30_000;
 
+// Watchdog for a single agent turn. Provider calls (and other awaited I/O
+// inside handlePrompt) have no built-in timeout, so a stalled connection can
+// hang the promise forever, blocking every message behind it in the queue.
+// This aborts the turn so it fails instead of hanging, and the failure is
+// treated as retryable (see the AbortError branch in processQueue) rather
+// than silently discarded, since it wasn't a user-requested /stop.
+const REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
 // Sources that require allowlist + interlocutor lookup before routing.
 // All other external sources route directly to the main agent.
 const GATED_SOURCES: string[] = ["signal", "telegram", "whatsapp", "email"];
@@ -258,6 +266,12 @@ async function processQueue(): Promise<void> {
     const preview = (entry.message ?? "").slice(0, 200);
     log.info(`[stavrobot] message in: ${entry.source} - ${entry.sender} - ${preview}`);
     currentEntry = entry;
+    let watchdogFired = false;
+    const watchdog = setTimeout(() => {
+      watchdogFired = true;
+      log.error(`[stavrobot] Agent turn exceeded ${REQUEST_TIMEOUT_MS / 1000}s, aborting to unblock the queue.`);
+      queueAgent!.abort();
+    }, REQUEST_TIMEOUT_MS);
     try {
       const routing = await resolveTargetAgent(queuePool!, entry.source, entry.sender, entry.targetAgentId);
       if (routing === null) {
@@ -269,9 +283,23 @@ async function processQueue(): Promise<void> {
       entry.resolve(response);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (error instanceof AbortError) {
+      if (error instanceof AbortError && !watchdogFired) {
         log.info("[stavrobot] Agent was aborted, resolving cleanly.");
         entry.resolve("Aborted.");
+      } else if (error instanceof AbortError && watchdogFired) {
+        // Fall through to the same retry/give-up handling as a normal error,
+        // since this was a timeout, not a user-requested /stop.
+        if (entry.retries < MAX_RETRIES) {
+          const attempt = entry.retries + 1;
+          log.info(`[stavrobot] Message timed out (attempt ${attempt}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS / 1000}s.`);
+          await sleep(RETRY_DELAY_MS);
+          queue.push({ ...entry, retries: attempt });
+        } else {
+          log.error(`[stavrobot] Message timed out after ${MAX_RETRIES + 1} attempts, giving up.`);
+          const userMessage = "Something went wrong: the request timed out repeatedly.";
+          await sendErrorToSource(entry.source, entry.sender, queueConfig!, userMessage);
+          entry.resolve(userMessage);
+        }
       } else if (error instanceof AuthError) {
         log.error(`[stavrobot] Auth failure, not retrying: ${errorMessage}`);
         const loginMessage = `Authentication required. Visit ${queueConfig!.publicHostname}/login to log in.`;
@@ -318,6 +346,7 @@ async function processQueue(): Promise<void> {
         entry.resolve(userMessage);
       }
     } finally {
+      clearTimeout(watchdog);
       currentEntry = undefined;
     }
   }
