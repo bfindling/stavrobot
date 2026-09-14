@@ -21,6 +21,10 @@ interface TelegramEntity {
 
 interface TelegramMessage {
   chat: { id: number };
+  // Unix seconds, set by Telegram's servers when the message was sent — not
+  // when our webhook received it. Used to detect delivery delay between
+  // Telegram and us, which is invisible from our own processing time alone.
+  date?: number;
   text?: string;
   caption?: string;
   entities?: TelegramEntity[];
@@ -364,6 +368,17 @@ export async function handleTelegramWebhook(
 
   const updateType = message.voice || message.audio ? "voice" : message.photo ? "photo" : message.document ? "document" : message.text ? "text" : "unknown";
   log.debug(`[stavrobot] [debug] Webhook accepted: chatId=${chatId}, type=${updateType}`);
+
+  if (message.date !== undefined) {
+    const delaySeconds = Date.now() / 1000 - message.date;
+    // Ordinary delivery jitter is a couple of seconds; anything over a minute
+    // means Telegram couldn't reach us promptly (funnel/tailscale/webhook
+    // trouble on our end, or a delay on Telegram's side) and is worth knowing
+    // about even though we can't tell which side caused it from here.
+    if (delaySeconds > 60) {
+      log.warn(`[stavrobot] Telegram message from chat ${chatId} took ${Math.round(delaySeconds)}s to reach the webhook (sent at ${new Date(message.date * 1000).toISOString()}).`);
+    }
+  }
 
   if (!isInAllowlist("telegram", String(chatId))) {
     log.info("[stavrobot] Telegram message from disallowed chat ID:", chatId);
