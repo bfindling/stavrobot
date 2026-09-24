@@ -46,3 +46,8 @@ services:
     volumes:
       - {{ HM_DATA_DIR }}/main:/root/config:ro
       - {{ HM_DATA_DIR }}/signal-cli:/root/.local/share/signal-cli
+  tailscale:
+    profiles: ["tailscale"]
+    volumes:
+      - {{ HM_DATA_DIR }}/tailscale:/var/lib/tailscale
+      - ./tailscale:/config:ro

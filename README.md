@@ -98,6 +98,26 @@ Signal requires a **separate phone number** — not your personal one. A prepaid
    ```
 8. See the [signal-cli quickstart](https://github.com/AsamK/signal-cli/wiki/Quickstart) for details.
 
+### Tailscale setup
+
+The optional `tailscale` container makes the app reachable over your tailnet (with
+automatic HTTPS) without a reverse proxy or any published host ports. It also exposes
+just the Telegram webhook path to the internet via Tailscale Funnel, so Telegram can
+reach the bot while everything else stays private to your tailnet.
+
+1. In the Tailscale admin console, make sure Funnel is enabled for your tailnet and
+   generate an auth key (Settings > Keys).
+2. Add `TS_AUTHKEY=tskey-auth-...` to your `.env` file and include `tailscale` in
+   `COMPOSE_PROFILES`. `TS_HOSTNAME` sets the device name (default `stavrobot`).
+3. Start the containers: `docker compose up -d`.
+4. In the admin console, disable key expiry for the new device so it doesn't drop off
+   the tailnet after a few months. You can then remove `TS_AUTHKEY` from `.env`; the
+   node state is kept in `./data/tailscale`.
+5. Set `publicHostname` to `https://<hostname>.<tailnet>.ts.net` and
+   `[telegram].webhookHostname` to `https://<hostname>.<tailnet>.ts.net:8443`.
+
+The routing lives in `tailscale/serve.json`.
+
 ### Telegram setup
 
 1. Message @BotFather on Telegram, create a new bot, and copy the token.
@@ -149,7 +169,7 @@ docker compose up --build
 The API is available at `http://localhost:10567/chat`. See [HTTP API](#http-api) for the
 full list of endpoints.
 
-**Note:** Docker Compose only exposes the app on `localhost:10567`. To make it accessible externally (required for Telegram/Signal webhooks and the `publicHostname` setting), set up a reverse proxy (e.g. Nginx, Caddy) pointing to `localhost:10567`. You can also expose the port directly, but this is not recommended as traffic will be unencrypted.
+**Note:** Docker Compose only exposes the app on `localhost:10567`. To make it accessible externally (required for Telegram/Signal webhooks and the `publicHostname` setting), set up a reverse proxy (e.g. Nginx, Caddy) pointing to `localhost:10567`. You can also expose the port directly, but this is not recommended as traffic will be unencrypted. Alternatively, use the bundled [Tailscale container](#tailscale-setup).
 
 ### Without Docker
 

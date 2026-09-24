@@ -18,11 +18,18 @@ arbitrary scripts in isolated Unix user accounts.
 | `python-runner` | `./python-runner` | internal | Executes Python snippets |
 | `pg-backup` | `pgvector/pgvector:pg17` | — | Hourly pg_dump to `./data/db-backups` |
 | `signal-bridge` | `./signal-bridge` | internal:8081 | Signal protocol bridge (optional profile) |
+| `tailscale` | `tailscale/tailscale:stable` | tailnet:443, 8443 | Tailscale Serve/Funnel ingress (optional, `tailscale` profile) |
 
 The app mounts `./data/main` read-write at `/app/config` so its configuration editor can
 update `config.toml`. `plugin-runner`, `coder`, `signal-bridge`, and `python-runner`
 mount it read-only and load it only when they start. The `plugin-runner` and `coder`
 containers share `./data/plugins` and `./cache/plugins`.
+
+The optional `tailscale` container joins the tailnet as its own device and proxies
+straight to `app:3000` over the Compose network, so it does not depend on the host's
+published ports. Its Serve config (`tailscale/serve.json`) exposes the whole app on
+tailnet port 443 and only `/telegram/webhook` on port 8443, which is the one path
+published to the internet via Funnel. Node state lives in `./data/tailscale`.
 
 ---
 
