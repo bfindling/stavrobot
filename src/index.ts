@@ -631,9 +631,9 @@ async function main(): Promise<void> {
     } else if (request.method === "POST" && pathname === "/signal/captcha") {
       void handleSignalCaptchaSubmit(request, response);
     } else if (request.method === "GET" && pathname.startsWith("/api/pages/") && pathname.includes("/queries/")) {
-      void handlePageQueryRequest(request, response, pathname, config.password, pool, url);
+      void handlePageQueryRequest(request, response, pathname, config.pagesPassword ?? config.password, pool, url);
     } else if (request.method === "GET" && pathname.startsWith("/pages/")) {
-      void handlePageRequest(request, response, pathname, config.password, pool);
+      void handlePageRequest(request, response, pathname, config.pagesPassword ?? config.password, pool);
     } else {
       response.writeHead(404, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Not found" }));

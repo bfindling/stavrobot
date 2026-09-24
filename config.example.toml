@@ -13,6 +13,12 @@ model = "claude-sonnet-4-5"
 # Change this to something secure. Required: the app refuses to start without it.
 password = "change-me"
 
+# Optional separate password for private pages (served at /pages/<path> and their
+# /api/pages/<path>/queries/<name> endpoints). Lets you hand out a page to other
+# people (family, etc.) without giving them the admin password above, which also
+# unlocks chat, settings, and the DB explorer. Falls back to `password` if unset.
+# pagesPassword = "change-me-too"
+
 # Authentication: use exactly one of apiKey or authFile.
 # apiKey: a static Anthropic API key.
 # authFile: path to an auth.json with OAuth credentials (for Claude Pro/Max

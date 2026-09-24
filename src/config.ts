@@ -70,6 +70,7 @@ export interface Config {
   api?: string;
   publicHostname: string;
   password?: string;
+  pagesPassword?: string;
   baseSystemPrompt: string;
   compactionPrompt: string;
   compactionBulletPrompt: string;
@@ -154,6 +155,10 @@ export function parseConfig(content: string): Config {
 
   if (typeof config.password !== "string" || config.password.trim() === "") {
     throw new Error("Config must specify a password.");
+  }
+
+  if (config.pagesPassword !== undefined && config.pagesPassword.trim() === "") {
+    throw new Error("Config pagesPassword must not be empty when set.");
   }
 
   return config;
