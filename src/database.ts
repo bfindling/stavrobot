@@ -1,7 +1,8 @@
 import fs from "fs";
+import path from "path";
 import pg from "pg";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { loadPostgresConfig, OWNER_CHANNELS } from "./config.js";
+import { getConfigPath, loadPostgresConfig, OWNER_CHANNELS } from "./config.js";
 import { encodeToToon } from "./toon.js";
 import type { OwnerConfig } from "./config.js";
 import { log } from "./log.js";
@@ -545,6 +546,13 @@ const SEEDED_CRON_ENTRIES: SeededCronEntry[] = [
     marker: "[daily-maintenance]",
     cronExpression: "0 4 * * *",
     promptFile: "prompts/daily-maintenance-cron.txt",
+  },
+  {
+    marker: "[findling-daily]",
+    cronExpression: "0 5 * * *",
+    // Kept next to config.toml rather than in prompts/ because it contains family
+    // details that must not be committed to the public repo.
+    promptFile: path.join(path.dirname(getConfigPath()), "findling-daily-cron.txt"),
   },
 ];
 
