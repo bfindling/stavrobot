@@ -39,6 +39,7 @@ import {
   serializeMessagesForSummary,
   escalatingSummarize,
   selectCompactionCutIndex,
+  resolveCompactionBoundary,
   TRUNCATION_BUDGET_FRACTION,
   COMPACTION_THRESHOLD_FRACTION,
   COMPACTION_KEEP_FRACTION,
@@ -73,6 +74,8 @@ export {
   injectAutoSearchBlock,
   serializeMessagesForSummary,
   escalatingSummarize,
+  resolveCompactionBoundary,
+  LEVEL3_MAX_TOKENS,
   TRUNCATION_BUDGET_FRACTION,
   COMPACTION_THRESHOLD_FRACTION,
   COMPACTION_KEEP_FRACTION,
@@ -694,22 +697,17 @@ function triggerCompactionIfNeeded(agent: Agent, pool: pg.Pool, agentId: number,
       const previousBoundary = previousCompaction ? previousCompaction.upToMessageId : 0;
 
       // The boundary must be the last compacted message id. loadMessages keeps
-      // rows with id > upToMessageId, so using keepCount (not keepCount - 1)
+      // rows with id > upToMessageId, so skipping keepCount rows (not keepCount - 1)
       // preserves exactly messagesToKeep. The query is scoped to this agent
       // and bounded by snapshotMaxId so the OFFSET only counts messages that
       // existed when compaction started, not any inserted during summarization.
-      const keepCount = messagesToKeep.length;
-      const cutoffResult = await pool.query(
-        `SELECT id FROM messages WHERE agent_id = $1 AND id > $2 AND id <= $3 ORDER BY id DESC LIMIT 1 OFFSET ${keepCount}`,
-        [agentId, previousBoundary, snapshotMaxId],
-      );
-      if (cutoffResult.rows.length === 0) {
+      const upToMessageId = await resolveCompactionBoundary(pool, agentId, previousBoundary, snapshotMaxId, messagesToKeep.length);
+      if (upToMessageId === null) {
         log.warn("[stavrobot] Compaction skipped: no cutoff message found for computed boundary.");
         return;
       }
-      const upToMessageId = cutoffResult.rows[0].id as number;
 
-      log.debug(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${keepCount}, upToMessageId=${upToMessageId}`);
+      log.debug(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${messagesToKeep.length}, upToMessageId=${upToMessageId}`);
 
       await saveCompaction(pool, summaryText, upToMessageId, agentId);
       log.info(`[stavrobot] Background compaction complete: compacted ${messagesToCompact.length} messages, kept ${messagesToKeep.length}.`);

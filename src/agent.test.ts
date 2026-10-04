@@ -2,7 +2,7 @@ import { describe, it, expect, vi, type MockedFunction, beforeEach } from "vites
 import type { Agent, AgentMessage, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { Pool } from "pg";
-import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool, injectAutoSearchBlock, pendingAutoSearchBlocks, handlePrompt, createAgent, escalatingSummarize, selectCompactionCutIndex, isTurnBoundary } from "./agent/index.js";
+import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool, injectAutoSearchBlock, pendingAutoSearchBlocks, handlePrompt, createAgent, escalatingSummarize, selectCompactionCutIndex, isTurnBoundary, resolveCompactionBoundary, LEVEL3_MAX_TOKENS, CHARS_PER_TOKEN } from "./agent/index.js";
 import { getApiKey } from "./auth.js";
 import { loadMessages, loadAllMemories, loadAllScratchpadTitles, getMainAgentId, saveMessage, loadAgent } from "./database.js";
 import { runSearch } from "./search.js";
@@ -1238,6 +1238,33 @@ describe("escalatingSummarize", () => {
     expect(result.length).toBeLessThan(input.length);
   });
 
+  it("level 3 caps the result at LEVEL3_MAX_TOKENS and keeps the tail of the input", async () => {
+    const maxChars = LEVEL3_MAX_TOKENS * CHARS_PER_TOKEN;
+    const input = "H".repeat(maxChars * 3) + "TAIL";
+    const bloated = "B".repeat(input.length + 1);
+    mockComplete
+      .mockReturnValueOnce(makeCompleteResponse(bloated))
+      .mockReturnValueOnce(makeCompleteResponse(bloated));
+
+    const result = await escalatingSummarize(input, fakeConfig, fakeModel, fakeApiKey);
+
+    expect(result.startsWith("[truncated due to compaction failure]")).toBe(true);
+    expect(result.endsWith("TAIL")).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(maxChars + "[truncated due to compaction failure]\n".length);
+  });
+
+  it("level 3 keeps at most half the input when the input is below the cap", async () => {
+    const input = "A".repeat(3000);
+    const bloated = "B".repeat(input.length + 1);
+    mockComplete
+      .mockReturnValueOnce(makeCompleteResponse(bloated))
+      .mockReturnValueOnce(makeCompleteResponse(bloated));
+
+    const result = await escalatingSummarize(input, fakeConfig, fakeModel, fakeApiKey);
+
+    expect(result.length).toBeLessThanOrEqual(1500 + "[truncated due to compaction failure]\n".length);
+  });
+
   it("replaces {target} placeholder in bullet prompt with computed token count", async () => {
     // Input of 300 chars → ~100 estimated tokens → target = 50.
     const input = "A".repeat(300);
@@ -1252,6 +1279,41 @@ describe("escalatingSummarize", () => {
     const level2Prompt = mockComplete.mock.calls[1][1].systemPrompt as string;
     // 300 chars / 3 / 2 = 50 tokens target.
     expect(level2Prompt).toContain("50");
+  });
+});
+
+describe("resolveCompactionBoundary", () => {
+  function poolReturning(rows: { id: number }[]): Pool {
+    return { query: vi.fn().mockResolvedValue({ rows }) } as unknown as Pool;
+  }
+
+  it("returns the row found keepCount rows back from the snapshot", async () => {
+    const pool = poolReturning([{ id: 640 }]);
+
+    const boundary = await resolveCompactionBoundary(pool, 1, 610, 656, 16);
+
+    expect(boundary).toBe(640);
+    const [sql, params] = vi.mocked(pool.query).mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toContain("OFFSET 16");
+    expect(params).toEqual([1, 610, 656]);
+  });
+
+  it("keeps the previous boundary when only the previous summary was compacted", async () => {
+    // All 46 rows after the previous boundary are kept, so the OFFSET query is
+    // empty; the new summary should replace the old one at the same boundary.
+    const pool = poolReturning([]);
+
+    const boundary = await resolveCompactionBoundary(pool, 1, 610, 656, 46);
+
+    expect(boundary).toBe(610);
+  });
+
+  it("returns null when there is no previous compaction and no row is found", async () => {
+    const pool = poolReturning([]);
+
+    const boundary = await resolveCompactionBoundary(pool, 1, 0, 10, 10);
+
+    expect(boundary).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@ import { type TextContent, type ImageContent, type ThinkingContent, type ToolCal
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
+import type pg from "pg";
 import type { Config } from "../config.js";
 import type { SearchResults } from "../search.js";
 import { extractText } from "../embeddings.js";
@@ -154,6 +155,10 @@ export const TRUNCATION_BUDGET_FRACTION = 0.8;
 export const COMPACTION_THRESHOLD_FRACTION = 0.6;
 // Fraction of the compaction threshold to keep after compaction.
 export const COMPACTION_KEEP_FRACTION = 0.5;
+// Upper bound on the level 3 fallback summary. Level 3 output is saved as the
+// summary and fed back into the next compaction, so if it scales with the input
+// a run of LLM failures makes the summary grow without limit.
+export const LEVEL3_MAX_TOKENS = 10_000;
 
 // Selects the index of the first message to keep after compaction, or null if
 // no safe cut point exists. The cut always lands on a turn-boundary user message
@@ -459,7 +464,7 @@ export async function escalatingSummarize(
         },
       ],
     },
-    { apiKey, temperature: 0.1 },
+    { apiKey },
   );
 
   const level1Text = level1Response.content
@@ -474,7 +479,7 @@ export async function escalatingSummarize(
   // Level 2: bullet-point prompt targeting half the input's estimated token count.
   const targetTokens = Math.round(inputLength / 3 / 2);
   const level1NonTextBlocks = level1Response.content.filter((block) => block.type !== "text").length;
-  log.info(`[stavrobot] Compaction level 1 failed (textLength=${level1Text.length}, input=${inputLength}, stopReason=${level1Response.stopReason}, nonTextBlocks=${level1NonTextBlocks}), attempting level 2 bullet-point summary (target: ${targetTokens} tokens).`);
+  log.info(`[stavrobot] Compaction level 1 failed (textLength=${level1Text.length}, input=${inputLength}, stopReason=${level1Response.stopReason}, errorMessage=${level1Response.errorMessage ?? "none"}, nonTextBlocks=${level1NonTextBlocks}), attempting level 2 bullet-point summary (target: ${targetTokens} tokens).`);
 
   const bulletPrompt = config.compactionBulletPrompt.replace("{target}", String(targetTokens));
 
@@ -496,7 +501,7 @@ export async function escalatingSummarize(
         },
       ],
     },
-    { apiKey, temperature: 0.1 },
+    { apiKey },
   );
 
   const level2Text = level2Response.content
@@ -510,13 +515,44 @@ export async function escalatingSummarize(
 
   // Level 3: deterministic truncation — no LLM call.
   const level2NonTextBlocks = level2Response.content.filter((block) => block.type !== "text").length;
-  log.info(`[stavrobot] Compaction level 2 failed (textLength=${level2Text.length}, input=${inputLength}, stopReason=${level2Response.stopReason}, nonTextBlocks=${level2NonTextBlocks}), falling back to level 3 truncation.`);
+  log.info(`[stavrobot] Compaction level 2 failed (textLength=${level2Text.length}, input=${inputLength}, stopReason=${level2Response.stopReason}, errorMessage=${level2Response.errorMessage ?? "none"}, nonTextBlocks=${level2NonTextBlocks}), falling back to level 3 truncation.`);
 
-  const suffix = "\n[truncated due to compaction failure]";
+  // Keep the tail, since the most recent compacted messages are the ones the
+  // kept conversation follows on from.
+  const prefix = "[truncated due to compaction failure]\n";
+  const targetLength = Math.min(Math.floor(inputLength / 2), LEVEL3_MAX_TOKENS * CHARS_PER_TOKEN);
   // Guarantee the result is strictly shorter than the input. If the input is
-  // shorter than the suffix itself (an extreme edge case that should never
-  // occur in practice), just return the suffix — the input was tiny and
+  // shorter than the prefix itself (an extreme edge case that should never
+  // occur in practice), just return the prefix — the input was tiny and
   // shouldn't have triggered compaction.
-  const truncateLength = Math.max(0, inputLength - suffix.length - 1);
-  return inputText.slice(0, truncateLength) + suffix;
+  const keepLength = Math.max(0, Math.min(targetLength, inputLength - prefix.length - 1));
+  return prefix + inputText.slice(inputLength - keepLength);
+}
+
+// Returns the id of the last message covered by a new compaction, or null if
+// none can be determined. The boundary is the row keepCount rows back from the
+// snapshot's newest message, counting only rows after the previous boundary.
+//
+// When every row after the previous boundary is kept, the only thing compacted
+// was the previous summary itself (the synthetic first message), so the
+// boundary stays where it was and the new summary replaces the old one.
+export async function resolveCompactionBoundary(
+  pool: pg.Pool,
+  agentId: number,
+  previousBoundary: number,
+  snapshotMaxId: number,
+  keepCount: number,
+): Promise<number | null> {
+  const cutoffResult = await pool.query(
+    `SELECT id FROM messages WHERE agent_id = $1 AND id > $2 AND id <= $3 ORDER BY id DESC LIMIT 1 OFFSET ${keepCount}`,
+    [agentId, previousBoundary, snapshotMaxId],
+  );
+  if (cutoffResult.rows.length > 0) {
+    return cutoffResult.rows[0].id as number;
+  }
+  if (previousBoundary > 0) {
+    log.info(`[stavrobot] Compaction covers only the previous summary, keeping boundary at ${previousBoundary}.`);
+    return previousBoundary;
+  }
+  return null;
 }
