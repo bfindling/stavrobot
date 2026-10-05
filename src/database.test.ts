@@ -4,6 +4,7 @@ import type { Pool, QueryResult } from "pg";
 // Mock config and log dependencies so the module loads without real infrastructure.
 vi.mock("./config.js", () => ({
   loadPostgresConfig: vi.fn().mockReturnValue({}),
+  getConfigPath: vi.fn().mockReturnValue("/config/config.toml"),
   OWNER_CHANNELS: [],
 }));
 vi.mock("./log.js", () => ({
