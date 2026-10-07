@@ -27,6 +27,9 @@ vi.mock("./signal.js", () => ({
 vi.mock("./telegram-api.js", () => ({
   sendTelegramMessage: vi.fn(),
 }));
+vi.mock("./telegram.js", () => ({
+  convertMarkdownToTelegramHtml: vi.fn(async (markdown: string) => `<html>${markdown}</html>`),
+}));
 vi.mock("./whatsapp-api.js", () => ({
   sendWhatsappTextMessage: vi.fn(),
 }));
@@ -36,7 +39,6 @@ vi.mock("./database.js", () => ({
   isOwnerIdentity: vi.fn().mockReturnValue(false),
   resolveInterlocutor: vi.fn(),
   loadAgent: vi.fn().mockResolvedValue(null),
-  recordFallbackSend: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./allowlist.js", () => ({
   isInAllowlist: vi.fn().mockReturnValue(false),
@@ -48,6 +50,7 @@ import { isInAllowlist } from "./allowlist.js";
 import { sendSignalMessage } from "./signal.js";
 import { sendTelegramMessage } from "./telegram-api.js";
 import { sendWhatsappTextMessage } from "./whatsapp-api.js";
+import { recordDelivery } from "./delivery-tracker.js";
 import { initializeQueue, enqueueMessage, MAX_RETRIES } from "./queue.js";
 
 const mockInvalidateCredentials = vi.mocked(invalidateCredentials);
@@ -608,5 +611,88 @@ describe("steering", () => {
 
     await promptPromise;
     await ownerMessage;
+  });
+});
+
+describe("channel reply delivery", () => {
+  const configWithTelegram = { ...stubConfig, telegram: { botToken: "bot-token" } } as unknown as Config;
+
+  beforeEach(() => {
+    initializeQueue(stubAgent, stubPool, configWithTelegram);
+    mockIsOwnerIdentity.mockReturnValue(true);
+  });
+
+  it("delivers the final reply to the Telegram sender as converted HTML", async () => {
+    mockHandlePrompt.mockResolvedValueOnce("**hi**");
+
+    await enqueueMessage("hello", "telegram", "987654321");
+
+    expect(mockSendTelegramMessage).toHaveBeenCalledOnce();
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith("bot-token", "987654321", "<html>**hi**</html>");
+  });
+
+  it("delivers the final reply to the Signal sender", async () => {
+    mockHandlePrompt.mockResolvedValueOnce("hi");
+
+    await enqueueMessage("hello", "signal", "+1234567890");
+
+    expect(mockSendSignalMessage).toHaveBeenCalledWith("+1234567890", "hi");
+  });
+
+  it("does not deliver the reply again when a send tool already reached the sender", async () => {
+    mockHandlePrompt.mockImplementationOnce(async () => {
+      recordDelivery("telegram", "987654321");
+      return "Sent.";
+    });
+
+    await enqueueMessage("hello", "telegram", "987654321");
+
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it("still delivers the reply when a send tool only messaged someone else", async () => {
+    mockHandlePrompt.mockImplementationOnce(async () => {
+      recordDelivery("telegram", "555");
+      return "Done, I messaged them.";
+    });
+
+    await enqueueMessage("hello", "telegram", "987654321");
+
+    expect(mockSendTelegramMessage).toHaveBeenCalledOnce();
+    expect(mockSendTelegramMessage.mock.calls[0][1]).toBe("987654321");
+  });
+
+  it("forgets deliveries from the previous turn", async () => {
+    mockHandlePrompt.mockImplementationOnce(async () => {
+      recordDelivery("telegram", "987654321");
+      return "Sent.";
+    });
+    await enqueueMessage("first", "telegram", "987654321");
+    mockHandlePrompt.mockResolvedValueOnce("second reply");
+
+    await enqueueMessage("second", "telegram", "987654321");
+
+    expect(mockSendTelegramMessage).toHaveBeenCalledOnce();
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith("bot-token", "987654321", "<html>second reply</html>");
+  });
+
+  it("does not deliver an empty reply", async () => {
+    mockHandlePrompt.mockResolvedValueOnce("  ");
+
+    await enqueueMessage("hello", "telegram", "987654321");
+
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver replies for non-chat sources", async () => {
+    mockHandlePrompt.mockResolvedValue("reply");
+
+    await enqueueMessage("hello", "email", "owner@example.com");
+    await enqueueMessage("hello", "cron");
+    await enqueueMessage("hello");
+
+    expect(mockSendTelegramMessage).not.toHaveBeenCalled();
+    expect(mockSendSignalMessage).not.toHaveBeenCalled();
+    expect(mockSendWhatsappTextMessage).not.toHaveBeenCalled();
   });
 });

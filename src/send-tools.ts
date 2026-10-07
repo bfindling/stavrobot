@@ -16,6 +16,7 @@ import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
 import { log } from "./log.js";
 import { toolError, toolSuccess } from "./tool-result.js";
 import { currentAgentId } from "./agent-context.js";
+import { recordDelivery } from "./delivery-tracker.js";
 
 function signalRateLimitMessage(publicHostname: string): string {
   return `Message could not be sent because Signal is rate-limiting this account. Direct the user to ${publicHostname}/signal/captcha to solve the captcha. Do not attempt to resolve this yourself.`;
@@ -243,6 +244,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
 
         log.debug("[stavrobot] send_signal_message bridge response status:", response.status);
 
+        recordDelivery("signal", recipient);
         return toolSuccess("Message sent successfully.");
       }
 
@@ -252,6 +254,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         return toolError(signalRateLimitMessage(config.publicHostname));
       }
 
+      recordDelivery("signal", recipient);
       return toolSuccess("Message sent successfully.");
     },
   };
@@ -361,6 +364,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         }
 
         log.debug(`[stavrobot] send_telegram_message ${apiMethod} response status:`, response.status);
+        recordDelivery("telegram", recipient);
         return toolSuccess("Message sent successfully.");
       }
 
@@ -374,6 +378,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         return toolError(errorMessage);
       }
 
+      recordDelivery("telegram", recipient);
       return toolSuccess("Message sent successfully.");
     },
   };
@@ -476,11 +481,13 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
         }
 
         log.debug("[stavrobot] send_whatsapp_message attachment sent successfully.");
+        recordDelivery("whatsapp", recipient);
         return toolSuccess("Message sent successfully.");
       }
 
       await sendWhatsappTextMessage(recipient, message as string);
 
+      recordDelivery("whatsapp", recipient);
       return toolSuccess("Message sent successfully.");
     },
   };

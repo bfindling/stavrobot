@@ -46,9 +46,18 @@ External caller (Telegram / Signal / WhatsApp / email / Pebble Index / CLI)
   → Agent.prompt  (@earendil-works/pi-agent-core)
   → tool callbacks (execute_sql, manage_plugins, run_plugin_tool, …)
   → response string returned to synchronous callers
+  → final reply delivered to the sender  (Signal / Telegram / WhatsApp only)
 ```
 
 Webhook handlers acknowledge the request before their queued message is processed.
+
+For Signal, Telegram and WhatsApp, the queue sends the turn's final text response to the
+sender itself (Telegram replies go through the same Markdown-to-HTML conversion as
+`send_telegram_message`). The send tools record each recipient they deliver to during a
+turn (`src/delivery-tracker.ts`); if the agent already sent something to the sender with
+a send tool, the final text is not delivered, so the sender does not get the reply
+twice. Email is excluded because a reply there needs `send_email` for its subject and
+threading.
 
 `POST /chat` also accepts an optional boolean `async` field. With `async: true`, the
 handler validates the request and submits it through `enqueueMessage` once, then returns
@@ -433,7 +442,8 @@ allowlist + interlocutor lookup to determine the target agent. The Basic-authent
 | `src/index.ts` | HTTP server, routing, auth middleware, all endpoint handlers |
 | `src/pebble-index.ts` | Pebble Index multipart ring webhook handler |
 | `src/agent/index.ts` | Agent setup, all built-in tool definitions, `handlePrompt`, compaction, truncation |
-| `src/queue.ts` | Single-threaded message queue, routing, steering logic, retry |
+| `src/queue.ts` | Single-threaded message queue, routing, steering logic, retry, channel reply delivery |
+| `src/delivery-tracker.ts` | Records which recipients the send tools delivered to during the current turn |
 | `src/database.ts` | All SQL queries, schema init, migrations |
 | `src/config.ts` | Config loading and validation; loads prompt files |
 | `src/search.ts` | `db_search` tool: full-text + optional semantic search with RRF merge |

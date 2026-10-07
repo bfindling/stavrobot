@@ -508,7 +508,7 @@ async function main(): Promise<void> {
   await seedOwner(pool, config.owner);
   const agent = await createAgent(config, pool);
   initializeQueue(agent, pool, config);
-  await initializeScheduler(pool, config);
+  await initializeScheduler(pool);
   initializeEmbeddingsWorker(pool, config);
 
   let telegramWebhookSecret: string | undefined;

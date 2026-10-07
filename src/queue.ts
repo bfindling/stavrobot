@@ -7,9 +7,11 @@ import { AuthError, invalidateCredentials } from "./auth.js";
 import { isInAllowlist } from "./allowlist.js";
 import { sendSignalMessage } from "./signal.js";
 import { sendTelegramMessage } from "./telegram-api.js";
+import { convertMarkdownToTelegramHtml } from "./telegram.js";
 import { sendWhatsappTextMessage } from "./whatsapp-api.js";
 import type { FileAttachment } from "./uploads.js";
-import { getMainAgentId, isOwnerIdentity, resolveInterlocutor, loadAgent, recordFallbackSend } from "./database.js";
+import { getMainAgentId, isOwnerIdentity, resolveInterlocutor, loadAgent } from "./database.js";
+import { resetDeliveries, wasDeliveredTo } from "./delivery-tracker.js";
 import { log } from "./log.js";
 
 export const MAX_RETRIES = 3;
@@ -259,18 +261,28 @@ async function sendToSource(
   }
 }
 
-// Maps a message source to the tool the agent is instructed (in the system
-// prompt) to call in order to actually deliver a reply on that channel: a
-// plain text response is otherwise saved to the DB but never sent anywhere.
-// The model sometimes forgets to call it (observed in production: several
-// turns produced a perfectly good reply that just never reached Telegram).
-// This is a safety net, not the primary delivery path — it fires only when
-// the turn produced a non-empty reply and skipped the expected tool.
-const CHANNEL_SEND_TOOL: Record<string, string> = {
-  telegram: "send_telegram_message",
-  signal: "send_signal_message",
-  whatsapp: "send_whatsapp_message",
-};
+// Channels where the agent's final text reply is delivered to the sender
+// automatically. The agent only needs the send tools for anything beyond that
+// (attachments, extra messages, other recipients). Email is excluded because a
+// reply there needs a subject and threading, which only send_email provides.
+const AUTO_REPLY_SOURCES: string[] = ["signal", "telegram", "whatsapp"];
+
+// Unlike sendToSource, this converts Markdown for Telegram (as
+// send_telegram_message does), since replies are written in Markdown while
+// sendToSource's error notices are plain text.
+async function deliverReply(source: string, sender: string, config: Config, reply: string): Promise<void> {
+  log.info(`[stavrobot] message out: ${source} - ${sender} - ${reply.slice(0, 200)}`);
+  if (source === "telegram") {
+    try {
+      const html = await convertMarkdownToTelegramHtml(reply);
+      await sendTelegramMessage(config.telegram!.botToken, sender, html);
+    } catch (sendError) {
+      log.error(`[stavrobot] Failed to deliver Telegram reply: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+    }
+    return;
+  }
+  await sendToSource(source, sender, config, reply);
+}
 
 async function processQueue(): Promise<void> {
   processing = true;
@@ -285,18 +297,7 @@ async function processQueue(): Promise<void> {
       log.error(`[stavrobot] Agent turn exceeded ${REQUEST_TIMEOUT_MS / 1000}s, aborting to unblock the queue.`);
       queueAgent!.abort();
     }, REQUEST_TIMEOUT_MS);
-    const expectedSendTool = entry.source !== undefined ? CHANNEL_SEND_TOOL[entry.source] : undefined;
-    let sentViaChannelTool = false;
-    const unsubscribeSendTracker = expectedSendTool !== undefined
-      ? queueAgent!.subscribe((event) => {
-          if (event.type === "message_end" && event.message.role === "toolResult") {
-            const toolResult = event.message as unknown as { toolName: string; isError: boolean };
-            if (toolResult.toolName === expectedSendTool && !toolResult.isError) {
-              sentViaChannelTool = true;
-            }
-          }
-        })
-      : undefined;
+    resetDeliveries();
     try {
       const routing = await resolveTargetAgent(queuePool!, entry.source, entry.sender, entry.targetAgentId);
       if (routing === null) {
@@ -305,22 +306,16 @@ async function processQueue(): Promise<void> {
         continue;
       }
       const response = await handlePrompt(queueAgent!, queuePool!, entry.message, queueConfig!, routing, entry.source, entry.attachments, entry.retries > 0);
-      entry.resolve(response);
-      if (expectedSendTool !== undefined && !sentViaChannelTool && response.trim() !== "") {
-        log.warn(`[stavrobot] Turn produced a reply but never called ${expectedSendTool}; sending it directly as a fallback.`);
-        await sendToSource(entry.source, entry.sender, queueConfig!, response);
-        try {
-          await recordFallbackSend(queuePool!, {
-            source: entry.source!,
-            sender: entry.sender,
-            agentId: routing.agentId,
-            toolName: expectedSendTool,
-            message: response,
-          });
-        } catch (recordError) {
-          log.error(`[stavrobot] Failed to record fallback send: ${recordError instanceof Error ? recordError.message : String(recordError)}`);
-        }
+      if (
+        entry.source !== undefined &&
+        entry.sender !== undefined &&
+        AUTO_REPLY_SOURCES.includes(entry.source) &&
+        response.trim() !== "" &&
+        !wasDeliveredTo(entry.source, entry.sender)
+      ) {
+        await deliverReply(entry.source, entry.sender, queueConfig!, response);
       }
+      entry.resolve(response);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (error instanceof AbortError && !watchdogFired) {
@@ -387,7 +382,6 @@ async function processQueue(): Promise<void> {
       }
     } finally {
       clearTimeout(watchdog);
-      unsubscribeSendTracker?.();
       currentEntry = undefined;
     }
   }
