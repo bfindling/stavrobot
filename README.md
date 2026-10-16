@@ -118,6 +118,21 @@ reach the bot while everything else stays private to your tailnet.
 
 The routing lives in `tailscale/serve.json`.
 
+### Docker Desktop on WSL2
+
+Docker Desktop sometimes starts containers before the WSL2 drive mounts are ready,
+leaving bind mounts empty inside a container (for example, the `tailscale` container
+comes up without `serve.json`, so Funnel stays off and Telegram can't reach the bot).
+Restarting doesn't help, but recreating the container does.
+`scripts/post-boot-check.sh` waits for Docker, finds services with an empty bind mount,
+and recreates them. It logs to `data/post-boot-check.log`. To run it at Windows
+sign-in, add a startup entry (replace `Ubuntu` and the path with your distro and
+checkout):
+
+```
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "Stavrobot post-boot check" /t REG_SZ /d "conhost.exe --headless wsl.exe -d Ubuntu -e /mnt/d/stavrobot/scripts/post-boot-check.sh" /f
+```
+
 ### Telegram setup
 
 1. Message @BotFather on Telegram, create a new bot, and copy the token.
