@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import pg from "pg";
 import { CronExpressionParser } from "cron-parser";
-import { listCronEntries, deleteCronEntry } from "./database.js";
+import { listCronEntries, deleteCronEntry, recordCronEntryFired, isCatchUpCronNote, type CronEntry } from "./database.js";
 import { enqueueMessage } from "./queue.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
 import { log } from "./log.js";
@@ -22,7 +22,18 @@ function computeNextFireAt(cronExpression: string): Date {
   return interval.next().toDate();
 }
 
-async function loadEntries(pool: pg.Pool): Promise<void> {
+// Whether the most recent scheduled run fell on today's (local) date and hasn't fired yet.
+// Runs missed on earlier days are not caught up, since they would be stale by now.
+export function missedRunToday(cronExpression: string, lastFiredAt: Date, now: Date): boolean {
+  const previous = CronExpressionParser.parse(cronExpression, { currentDate: now }).prev().toDate();
+  return previous > lastFiredAt && previous.toDateString() === now.toDateString();
+}
+
+function frameCronNote(id: number, note: string): string {
+  return `[Cron entry ${id} has fired] ${note}`;
+}
+
+async function loadEntries(pool: pg.Pool): Promise<CronEntry[]> {
   const entries = await listCronEntries(pool);
   scheduledEntries = entries.map((entry) => {
     if (entry.cronExpression !== null) {
@@ -41,6 +52,7 @@ async function loadEntries(pool: pg.Pool): Promise<void> {
       };
     }
   });
+  return entries;
 }
 
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
@@ -87,6 +99,7 @@ function tick(): void {
   for (const entry of toFire) {
     if (entry.cronExpression !== null) {
       entry.nextFireAt = computeNextFireAt(entry.cronExpression);
+      void recordCronEntryFired(schedulerPool!, entry.id, now);
     } else {
       // Remove from in-memory list immediately so the next tick won't
       // re-fire it, even if the DB deletion hasn't completed yet.
@@ -96,8 +109,7 @@ function tick(): void {
   }
 
   for (const entry of toFire) {
-    const framedNote = `[Cron entry ${entry.id} has fired] ${entry.note}`;
-    void enqueueMessage(framedNote, "cron");
+    void enqueueMessage(frameCronNote(entry.id, entry.note), "cron");
   }
 
   void cleanupOldUploads();
@@ -105,7 +117,15 @@ function tick(): void {
 
 export async function initializeScheduler(pool: pg.Pool): Promise<void> {
   schedulerPool = pool;
-  await loadEntries(pool);
+  const entries = await loadEntries(pool);
+  const now = new Date();
+  for (const entry of entries) {
+    if (entry.cronExpression !== null && isCatchUpCronNote(entry.note) && missedRunToday(entry.cronExpression, entry.lastFiredAt, now)) {
+      log.info(`[stavrobot] Cron entry ${entry.id} missed its run earlier today, firing it now.`);
+      await recordCronEntryFired(pool, entry.id, now);
+      void enqueueMessage(frameCronNote(entry.id, entry.note), "cron");
+    }
+  }
   setInterval(tick, 60_000);
   log.info(`[stavrobot] Scheduler initialized with ${scheduledEntries.length} entries.`);
 }

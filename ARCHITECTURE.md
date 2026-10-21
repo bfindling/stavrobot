@@ -264,7 +264,7 @@ Plugins live in `/plugins/<name>/` (shared volume between `plugin-runner` and `c
 | `memories` | Always-injected knowledge (short facts, full text in system prompt every turn) |
 | `compactions` | Summarised history snapshots (up_to_message_id boundary) |
 | `scratchpad` | On-demand knowledge (title injected, body fetched on read via manage_knowledge) |
-| `cron_entries` | Scheduled entries (cron expression or one-shot fire_at) |
+| `cron_entries` | Scheduled entries (cron expression or one-shot fire_at), with `last_fired_at` so seeded entries marked `catchUp` (the daily page) can fire on startup if that day's run was missed |
 | `pages` | LLM-authored pages (path, mimetype, data BYTEA, is_public, queries JSONB, version INTEGER); append-only versioning — each update inserts a new row; empty `data` is a tombstone |
 | `agents` | Subagent definitions (name, system_prompt, allowed_tools TEXT[], allowed_plugins TEXT[]) |
 | `interlocutors` | Contact records (display_name, owner bool, enabled bool, agent_id FK) |

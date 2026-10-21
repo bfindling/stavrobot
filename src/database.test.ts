@@ -16,7 +16,7 @@ vi.mock("./toon.js", () => ({
 vi.mock("fs");
 
 import fs from "fs";
-import { resolveInterlocutor, seedOwner, seedCronEntries, upsertPage, deletePage, getPageByPath, getPageQueryByPath, readPage, listPageVersions, restorePageVersion, readScratchpad, saveMessage } from "./database.js";
+import { resolveInterlocutor, seedOwner, seedCronEntries, isCatchUpCronNote, upsertPage, deletePage, getPageByPath, getPageQueryByPath, readPage, listPageVersions, restorePageVersion, readScratchpad, saveMessage } from "./database.js";
 import type { OwnerConfig } from "./config.js";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
@@ -916,5 +916,13 @@ describe("saveMessage — returns inserted id", () => {
 
     expect(capturedValues?.[3]).toBe(42);
     expect(capturedValues?.[4]).toBeNull();
+  });
+});
+
+describe("isCatchUpCronNote", () => {
+  it("returns true only for seeded entries marked for catch-up", () => {
+    expect(isCatchUpCronNote("[findling-daily] regenerate the page")).toBe(true);
+    expect(isCatchUpCronNote("[nightly-review] review yesterday")).toBe(false);
+    expect(isCatchUpCronNote("remind me to call the dentist")).toBe(false);
   });
 });

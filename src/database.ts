@@ -489,6 +489,9 @@ interface SeededCronEntry {
   marker: string;
   cronExpression: string;
   promptFile: string;
+  // Whether a run missed earlier the same day (e.g. because the host was off) should be
+  // fired when the app starts.
+  catchUp: boolean;
 }
 
 const SEEDED_CRON_ENTRIES: SeededCronEntry[] = [
@@ -496,11 +499,13 @@ const SEEDED_CRON_ENTRIES: SeededCronEntry[] = [
     marker: "[nightly-review]",
     cronExpression: "0 3 * * *",
     promptFile: "prompts/nightly-checkup-cron.txt",
+    catchUp: false,
   },
   {
     marker: "[daily-maintenance]",
     cronExpression: "0 4 * * *",
     promptFile: "prompts/daily-maintenance-cron.txt",
+    catchUp: false,
   },
   {
     marker: "[findling-daily]",
@@ -508,8 +513,13 @@ const SEEDED_CRON_ENTRIES: SeededCronEntry[] = [
     // Kept next to config.toml rather than in prompts/ because it contains family
     // details that must not be committed to the public repo.
     promptFile: path.join(path.dirname(getConfigPath()), "findling-daily-cron.txt"),
+    catchUp: true,
   },
 ];
+
+export function isCatchUpCronNote(note: string): boolean {
+  return SEEDED_CRON_ENTRIES.some((entry) => entry.catchUp && note.startsWith(entry.marker));
+}
 
 export async function seedCronEntries(pool: pg.Pool): Promise<void> {
   for (const entry of SEEDED_CRON_ENTRIES) {
@@ -560,6 +570,7 @@ export interface CronEntry {
   cronExpression: string | null;
   fireAt: Date | null;
   note: string;
+  lastFiredAt: Date;
 }
 
 export async function createCronEntry(
@@ -569,7 +580,7 @@ export async function createCronEntry(
   note: string,
 ): Promise<CronEntry> {
   const result = await pool.query(
-    "INSERT INTO cron_entries (cron_expression, fire_at, note) VALUES ($1, $2, $3) RETURNING id, cron_expression, fire_at, note",
+    "INSERT INTO cron_entries (cron_expression, fire_at, note) VALUES ($1, $2, $3) RETURNING id, cron_expression, fire_at, note, last_fired_at",
     [cronExpression, fireAt, note],
   );
   const row = result.rows[0];
@@ -578,6 +589,7 @@ export async function createCronEntry(
     cronExpression: row.cron_expression as string | null,
     fireAt: row.fire_at as Date | null,
     note: row.note as string,
+    lastFiredAt: row.last_fired_at as Date,
   };
 }
 
@@ -605,7 +617,7 @@ export async function updateCronEntry(
 
   values.push(id);
   const result = await pool.query(
-    `UPDATE cron_entries SET ${setClauses.join(", ")} WHERE id = $${paramIndex} RETURNING id, cron_expression, fire_at, note`,
+    `UPDATE cron_entries SET ${setClauses.join(", ")} WHERE id = $${paramIndex} RETURNING id, cron_expression, fire_at, note, last_fired_at`,
     values,
   );
   const row = result.rows[0];
@@ -614,6 +626,7 @@ export async function updateCronEntry(
     cronExpression: row.cron_expression as string | null,
     fireAt: row.fire_at as Date | null,
     note: row.note as string,
+    lastFiredAt: row.last_fired_at as Date,
   };
 }
 
@@ -621,15 +634,20 @@ export async function deleteCronEntry(pool: pg.Pool, id: number): Promise<void> 
   await pool.query("DELETE FROM cron_entries WHERE id = $1", [id]);
 }
 
+export async function recordCronEntryFired(pool: pg.Pool, id: number, firedAt: Date): Promise<void> {
+  await pool.query("UPDATE cron_entries SET last_fired_at = $1 WHERE id = $2", [firedAt, id]);
+}
+
 export async function listCronEntries(pool: pg.Pool): Promise<CronEntry[]> {
   const result = await pool.query(
-    "SELECT id, cron_expression, fire_at, note FROM cron_entries ORDER BY id",
+    "SELECT id, cron_expression, fire_at, note, last_fired_at FROM cron_entries ORDER BY id",
   );
   return result.rows.map((row) => ({
     id: row.id as number,
     cronExpression: row.cron_expression as string | null,
     fireAt: row.fire_at as Date | null,
     note: row.note as string,
+    lastFiredAt: row.last_fired_at as Date,
   }));
 }
 

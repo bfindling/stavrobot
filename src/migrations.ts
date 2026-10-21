@@ -151,12 +151,15 @@ const migrations: Migration[] = [
         fire_at TIMESTAMPTZ,
         note TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CHECK (
           (cron_expression IS NOT NULL AND fire_at IS NULL) OR
           (cron_expression IS NULL AND fire_at IS NOT NULL)
         )
       )
     `);
+    // Existing rows get NOW() so that adding the column doesn't look like a missed run.
+    await client.query(`ALTER TABLE cron_entries ADD COLUMN IF NOT EXISTS last_fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS pages (
