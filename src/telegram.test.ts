@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { applyTelegramEntitiesToMarkdown } from "./telegram.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { applyTelegramEntitiesToMarkdown, registerTelegramWebhookWithRetry } from "./telegram.js";
 
 describe("applyTelegramEntitiesToMarkdown", () => {
   it("returns text unchanged when entities is undefined", () => {
@@ -151,5 +151,36 @@ describe("applyTelegramEntitiesToMarkdown", () => {
       { type: "bot_command", offset: 11, length: 4 },
     ]);
     expect(result).toBe("@user #tag /cmd");
+  });
+});
+
+describe("registerTelegramWebhookWithRetry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("retries with backoff until registration succeeds", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ status: 400, json: async () => ({ ok: false, description: "bad webhook: Failed to resolve host" }) })
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ status: 200, json: async () => ({ ok: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = registerTelegramWebhookWithRetry({ botToken: "token" }, "https://example.com");
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    const secret = await promise;
+    expect(secret).toMatch(/^[0-9a-f-]{36}$/);
+    const body = JSON.parse(fetchMock.mock.calls[2][1].body as string) as { url: string; secret_token: string };
+    expect(body.url).toBe("https://example.com/telegram/webhook");
+    expect(body.secret_token).toBe(secret);
   });
 });

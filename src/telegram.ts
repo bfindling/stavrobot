@@ -315,6 +315,28 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
   return secret;
 }
 
+const WEBHOOK_RETRY_INITIAL_DELAY_MS = 5_000;
+const WEBHOOK_RETRY_MAX_DELAY_MS = 5 * 60_000;
+
+// Retries forever because the usual failure is transient: right after a host reboot the
+// webhook hostname (e.g. a Tailscale Funnel) may not resolve yet, and giving up would leave
+// Telegram dead until someone notices and restarts the app.
+export async function registerTelegramWebhookWithRetry(
+  config: TelegramConfig,
+  publicHostname: string,
+): Promise<string> {
+  let delayMs = WEBHOOK_RETRY_INITIAL_DELAY_MS;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await registerTelegramWebhook(config, publicHostname);
+    } catch (error) {
+      log.error(`[stavrobot] Failed to register Telegram webhook (attempt ${attempt}), retrying in ${delayMs / 1000}s:`, error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    delayMs = Math.min(delayMs * 2, WEBHOOK_RETRY_MAX_DELAY_MS);
+  }
+}
+
 async function downloadTelegramFile(config: TelegramConfig, fileId: string): Promise<Buffer> {
   log.debug("[stavrobot] Fetching Telegram file info for file_id:", fileId);
 

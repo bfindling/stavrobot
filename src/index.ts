@@ -14,7 +14,7 @@ import { initializeQueue, enqueueMessage } from "./queue.js";
 import { initializeScheduler } from "./scheduler.js";
 import { initializeEmbeddingsWorker } from "./embeddings.js";
 import type { TelegramConfig } from "./config.js";
-import { registerTelegramWebhook, handleTelegramWebhook } from "./telegram.js";
+import { registerTelegramWebhookWithRetry, handleTelegramWebhook } from "./telegram.js";
 import { serveLoginPage, handleLoginEvents, handleLoginRespond } from "./login.js";
 import {
   serveExplorerPage,
@@ -265,8 +265,8 @@ export async function handleTelegramWebhookRequest(
   }
 
   if (webhookSecret === undefined) {
-    // Telegram is configured but webhook registration never succeeded (e.g. it failed at
-    // startup). There is no secret to check requests against, so refuse everything rather
+    // Telegram is configured but webhook registration hasn't succeeded yet (it is still
+    // retrying). There is no secret to check requests against, so refuse everything rather
     // than silently accepting unauthenticated requests.
     log.info("[stavrobot] Telegram webhook rejected: webhook not registered");
     response.writeHead(503, { "Content-Type": "application/json" });
@@ -516,15 +516,15 @@ async function main(): Promise<void> {
     if (config.publicHostname === undefined) {
       throw new Error("Config must specify publicHostname when telegram is configured.");
     }
-    try {
-      telegramWebhookSecret = await registerTelegramWebhook(
-        config.telegram,
-        config.telegram.webhookHostname ?? config.publicHostname,
-      );
-      log.debug(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${telegramWebhookSecret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
-    } catch (error) {
-      log.error("[stavrobot] Failed to register Telegram webhook; Telegram will be unavailable until this is fixed and the app is restarted:", error);
-    }
+    // Registration runs in the background so the rest of the app is available while it
+    // retries. Webhook requests get a 503 until it succeeds, and Telegram redelivers them.
+    void registerTelegramWebhookWithRetry(
+      config.telegram,
+      config.telegram.webhookHostname ?? config.publicHostname,
+    ).then((secret) => {
+      telegramWebhookSecret = secret;
+      log.debug(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${secret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
+    });
   }
 
   if (config.whatsapp !== undefined) {
